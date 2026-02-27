@@ -1,0 +1,327 @@
+#!/bin/bash
+
+CONFIG_DIR="/etc/gretab"
+SERVICE_DIR="/etc/systemd/system"
+
+mkdir -p $CONFIG_DIR
+
+BLUE="\033[1;34m"
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+NC="\033[0m"
+
+clear_screen() {
+clear
+cat << "EOF"
+                       ██
+                     ░████░
+                    ██▒  ░██             ▓░
+                   ██      ██          ▒█
+                 ██▒        ▒██      █░░█▓▒
+                ██  ▒██████▓  ██    █▓
+              ██▓    ████▓█    ▒██ █░█
+             ██░░█      █▒      ░██▓
+           ▓█▓ ████     ░     ███ ▒██
+          ██     ███        ███     ██
+        ▒██       ░███░  ░██▒        ██▓
+       ██             ████             ██
+     ▒██             ███                ██▓
+    ██             ██▓                    ██
+  ░██████████████████████████████████████████▒
+              ███
+            ███
+          ██░
+       ▓██████████████████████████████████
+EOF
+echo "================================================"
+echo "   ███████╗██╗   ██╗██╗██╗      ██████╗██╗   ██╗"
+echo "   ██╔════╝██║   ██║██║██║     ██╔════╝██║   ██║"
+echo "   █████╗  ██║   ██║██║██║     ██║     ██║   ██║"
+echo "   ██╔══╝  ╚██╗ ██╔╝██║██║     ██║     ██║   ██║"
+echo "   ███████╗ ╚████╔╝ ██║███████╗╚██████╗╚██████╔╝"
+echo "   ╚══════╝  ╚═══╝  ╚═╝╚══════╝ ╚═════╝ ╚═════╝"
+echo "================================================"
+echo -e "${BLUE}Telegram channel : @Evilcu${NC}"
+echo "================================================"
+echo
+}
+
+pause() {
+read -p "Press Enter to continue..."
+}
+
+get_local_ip() {
+ip route get 1 | awk '{print $7; exit}'
+}
+
+calc_ips() {
+
+id=$1
+
+base=$(( (id - 1) * 2 + 1 ))
+
+KH_IP="20.0.0.$base"
+IR_IP="20.0.0.$((base+1))"
+
+KH_IP6="fd00:aaaa:bbbb::$base"
+IR_IP6="fd00:aaaa:bbbb::$((base+1))"
+
+}
+
+create_service() {
+
+id=$1
+local_ip=$2
+remote_ip=$3
+my_ip=$4
+role=$5
+
+iface="gretab$id"
+
+calc_ips $id
+
+if [ "$role" == "kharej" ]; then
+my_ip6=$KH_IP6
+else
+my_ip6=$IR_IP6
+fi
+
+cat > $CONFIG_DIR/id$id.conf <<EOF
+ID=$id
+LOCAL=$local_ip
+REMOTE=$remote_ip
+MYIP=$my_ip
+MYIP6=$my_ip6
+ROLE=$role
+IFACE=$iface
+EOF
+
+cat > $SERVICE_DIR/gretab-id$id.service <<EOF
+[Unit]
+Description=Gretab Tunnel ID $id
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe gre
+ExecStart=/sbin/modprobe ip_gre
+ExecStart=-/sbin/ip link del $iface
+ExecStart=/sbin/ip link add $iface type gretap local $local_ip remote $remote_ip ttl 255
+ExecStart=/sbin/ip addr add $my_ip/24 dev $iface
+ExecStart=/sbin/ip -6 addr add $my_ip6/64 dev $iface
+ExecStart=/sbin/ip link set $iface up
+
+ExecStop=-/sbin/ip link del $iface
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable gretab-id$id.service
+systemctl start gretab-id$id.service
+
+}
+
+create_tunnel() {
+
+clear_screen
+
+echo "1 - Kharej"
+echo "2 - Iran"
+echo
+
+read -p "Choice: " type
+
+echo
+read -p "please send a tunnel ID it must mach to other server: " id
+
+calc_ips $id
+
+local_detected=$(get_local_ip)
+
+if [ "$type" == "1" ]; then
+
+read -p "send Kharej ip [$local_detected]: " local_ip
+local_ip=${local_ip:-$local_detected}
+
+read -p "send Iran ip: " remote_ip
+
+my_ip=$KH_IP
+role="kharej"
+
+create_service $id $local_ip $remote_ip $my_ip $role
+
+echo
+echo -e "${GREEN}you are in kharej tunnel check with :${NC}"
+echo "ping $IR_IP"
+
+elif [ "$type" == "2" ]; then
+
+read -p "send Iran ip [$local_detected]: " local_ip
+local_ip=${local_ip:-$local_detected}
+
+read -p "send Kharej ip: " remote_ip
+
+my_ip=$IR_IP
+role="iran"
+
+create_service $id $local_ip $remote_ip $my_ip $role
+
+echo
+echo -e "${GREEN}you are in iran tunnel check with :${NC}"
+echo "ping $KH_IP"
+
+fi
+
+exit
+
+}
+
+manage_menu() {
+
+clear_screen
+
+files=$(ls $CONFIG_DIR 2>/dev/null)
+
+if [ -z "$files" ]; then
+echo "No tunnels found"
+pause
+return
+fi
+
+i=1
+
+declare -A map
+
+for f in $files; do
+
+source $CONFIG_DIR/$f
+
+echo "$i - ID$ID ir| $([ "$ROLE" == "iran" ] && echo "$LOCAL" || echo "$REMOTE") | & kh| $([ "$ROLE" == "kharej" ] && echo "$LOCAL" || echo "$REMOTE") |"
+
+map[$i]=$ID
+
+((i++))
+
+done
+
+echo
+read -p "Select: " sel
+
+id=${map[$sel]}
+
+manage_tunnel $id
+
+}
+
+manage_tunnel() {
+
+id=$1
+
+while true; do
+
+clear_screen
+
+echo "1 - Status"
+echo "2 - Edit"
+echo "3 - Restart"
+echo "4 - Test"
+echo "5 - Stop"
+echo "6 - Delete"
+echo
+
+read -p "Choice: " c
+
+calc_ips $id
+
+case $c in
+
+1)
+systemctl status gretab-id$id.service
+pause
+;;
+
+2)
+nano $SERVICE_DIR/gretab-id$id.service
+;;
+
+3)
+systemctl restart gretab-id$id.service
+;;
+
+4)
+source $CONFIG_DIR/id$id.conf
+if [ "$ROLE" == "iran" ]; then
+ping -c 4 $KH_IP
+else
+ping -c 4 $IR_IP
+fi
+pause
+;;
+
+5)
+systemctl stop gretab-id$id.service
+;;
+
+6)
+systemctl stop gretab-id$id.service
+systemctl disable gretab-id$id.service
+rm -f $SERVICE_DIR/gretab-id$id.service
+rm -f $CONFIG_DIR/id$id.conf
+systemctl daemon-reload
+return
+;;
+
+esac
+
+done
+
+}
+
+about() {
+
+clear_screen
+
+echo "این تانل روی همه‌ی سرور ها جواب نمیده ولی تست شده هست روی سرورهای آسیاتک خوب جواب داده البته نه تمام رنج ها و روی تقریباً 50 درصد سرورهایی که تست شده کارکرد عالی داشته ."
+echo
+echo "راحت‌ترین حالت هم اینه که اگه ایپی های ساخته شده به هم پینگ دادن"
+echo "تو ایران پنل نصب کنید و با دکودمودور ترافیک رو با تارگت گذاشتن ایپی مقصد تانل فوروارد کنید"
+echo
+echo "با درود بر روح پاک جان فدایان میهن"
+echo "و درود بر غیرت و شرف تمام آزادی خواهان ❤️"
+echo
+
+pause
+
+}
+
+main_menu() {
+
+while true; do
+
+clear_screen
+
+echo "1 - Create tunnel"
+echo "2 - Manage tunnel/s"
+echo "3 - About"
+echo "4 - Exit"
+echo
+
+read -p "Choice: " c
+
+case $c in
+
+1) create_tunnel ;;
+2) manage_menu ;;
+3) about ;;
+4) exit ;;
+esac
+
+done
+
+}
+
+main_menu
